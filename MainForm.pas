@@ -3,68 +3,48 @@ unit MainForm;
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, 
-  System.Classes, Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs, 
-  Vcl.StdCtrls, REST.Types, REST.Client, Data.Bind.Components, 
-  Data.Bind.ObjectScope, REST.Authenticator.OAuth, System.JSON,
-  Vcl.ComCtrls, Vcl.ExtCtrls, System.Threading;
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
+  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, REST.Client, REST.Types,
+  System.JSON, TokenStorage, Vcl.ExtCtrls;
 
 type
   TFormMain = class(TForm)
+    GroupBox1: TGroupBox;
+    btnLogin: TButton;
+    btnRefreshToken: TButton;
+    btnGetProtectedData: TButton;
+    btnClearTokens: TButton;
+    btnShowTokens: TButton;
+    MemoResponse: TMemo;
     RESTClient1: TRESTClient;
     RESTRequest1: TRESTRequest;
     RESTResponse1: TRESTResponse;
-    OAuth2Authenticator1: TOAuth2Authenticator;
-    GroupBox1: TGroupBox;
+    edtUsername: TEdit;
+    edtPassword: TEdit;
     Label1: TLabel;
     Label2: TLabel;
-    EditEmail: TEdit;
-    EditPassword: TEdit;
-    btnLogin: TButton;
-    GroupBox2: TGroupBox;
-    btnGetUsers: TButton;
-    MemoResponse: TMemo;
-    btnRefreshToken: TButton;
-    btnClearTokens: TButton;
-    StatusBar1: TStatusBar;
-    Label3: TLabel;
-    LabelTokenStatus: TLabel;
-    PanelLoading: TPanel;
-    ShapeLoading: TShape;
-    LabelLoading: TLabel;
-    ProgressBarLoading: TProgressBar;
-    TimerLoading: TTimer;
-    btnCancelRequest: TButton;
+    Timer1: TTimer;
     procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
     procedure btnLoginClick(Sender: TObject);
     procedure btnRefreshTokenClick(Sender: TObject);
-    procedure btnGetUsersClick(Sender: TObject);
+    procedure btnGetProtectedDataClick(Sender: TObject);
     procedure btnClearTokensClick(Sender: TObject);
-    procedure FormDestroy(Sender: TObject);
-    procedure TimerLoadingTimer(Sender: TObject);
-    procedure btnCancelRequestClick(Sender: TObject);
+    procedure btnShowTokensClick(Sender: TObject);
+    procedure Timer1Timer(Sender: TObject);
   private
-    FTask: ITask;
-    FCancelled: Boolean;
-    FLoadingAnimationStep: Integer;
-    
-    procedure ShowLoading(const Message: string);
-    procedure HideLoading;
-    procedure EnableControls(AEnable: Boolean);
-    procedure UpdateTokenStatus;
+    { Private declarations }
+    FAccessToken: string;
+    FRefreshToken: string;
+    FTokenExpiry: TDateTime;
+    procedure LoadStoredTokens;
+    procedure SaveTokens;
+    procedure ClearTokens;
     function IsTokenExpired: Boolean;
-    
-    procedure LoginAsync(const Email, Password: string);
-    procedure RefreshAccessTokenAsync;
-    procedure GetUsersListAsync;
-    
-    function Login(const Email, Password: string): Boolean;
-    function RefreshAccessToken: Boolean;
-    function GetUsersList: string;
-    procedure SaveTokensFromResponse(const JSONResponse: TJSONObject);
-    
-    procedure LogMessage(const Msg: string);
+    procedure RefreshAccessToken;
+    procedure SetAuthorizationHeader;
   public
+    { Public declarations }
   end;
 
 var
@@ -75,529 +55,236 @@ implementation
 {$R *.dfm}
 
 uses
-  ApiEndpoints, TokenStorage, System.DateUtils;
+  System.DateUtils;
 
 procedure TFormMain.FormCreate(Sender: TObject);
 begin
-  FCancelled := False;
-  FLoadingAnimationStep := 0;
-  
-  TTokenStorage.Initialize;
-  
-  RESTClient1.BaseURL := API_BASE_URL;
-  RESTClient1.ConnectTimeout := 30000;
-  RESTClient1.ReadTimeout := 30000;
-  
-  RESTRequest1.Client := RESTClient1;
-  RESTRequest1.Response := RESTResponse1;
-  RESTRequest1.Timeout := 30000;
-  
-  OAuth2Authenticator1.AccessToken := TTokenStorage.LoadAccessToken;
-  OAuth2Authenticator1.TokenType := TOAuth2TokenType.ttBEARER;
-  RESTClient1.Authenticator := OAuth2Authenticator1;
-  
-  PanelLoading.Visible := False;
-  PanelLoading.BringToFront;
-  
-  UpdateTokenStatus;
-  
-  if TTokenStorage.IsSafeMode then
-    StatusBar1.SimpleText := 'Safe Mode: ENABLED (DPAPI)'
-  else
-    StatusBar1.SimpleText := 'Safe Mode: DISABLED (Memory Only)';
+  RESTClient1.BaseURL := 'http://localhost:3000';
+  LoadStoredTokens;
+  Timer1.Interval := 60000; // Check every minute
+  Timer1.Enabled := True;
 end;
 
 procedure TFormMain.FormDestroy(Sender: TObject);
 begin
-  TimerLoading.Enabled := False;
+  SaveTokens;
+end;
+
+procedure TFormMain.LoadStoredTokens;
+begin
+  FAccessToken := TTokenStorage.LoadAccessToken;
+  FRefreshToken := TTokenStorage.LoadRefreshToken;
+  FTokenExpiry := TTokenStorage.LoadTokenExpiry;
   
-  if Assigned(FTask) then
-  begin
-    FCancelled := True;
-    Sleep(100);
-  end;
+  if FAccessToken <> '' then
+    MemoResponse.Lines.Add('Tokens loaded from storage');
 end;
 
-procedure TFormMain.ShowLoading(const Message: string);
+procedure TFormMain.SaveTokens;
 begin
-  FCancelled := False;
-  FLoadingAnimationStep := 0;
-  LabelLoading.Caption := Message;
-  ProgressBarLoading.Position := 0;
-  PanelLoading.Visible := True;
-  PanelLoading.BringToFront;
-  TimerLoading.Enabled := True;
-  Application.ProcessMessages;
+  TTokenStorage.SaveAccessToken(FAccessToken);
+  TTokenStorage.SaveRefreshToken(FRefreshToken);
+  TTokenStorage.SaveTokenExpiry(FTokenExpiry);
 end;
 
-procedure TFormMain.HideLoading;
+procedure TFormMain.ClearTokens;
 begin
-  TimerLoading.Enabled := False;
-  PanelLoading.Visible := False;
-  Application.ProcessMessages;
-end;
-
-procedure TFormMain.EnableControls(AEnable: Boolean);
-begin
-  btnLogin.Enabled := AEnable;
-  btnRefreshToken.Enabled := AEnable;
-  btnGetUsers.Enabled := AEnable;
-  btnClearTokens.Enabled := AEnable;
-  EditEmail.Enabled := AEnable;
-  EditPassword.Enabled := AEnable;
-  btnCancelRequest.Visible := not AEnable;
-end;
-
-procedure TFormMain.TimerLoadingTimer(Sender: TObject);
-begin
-  Inc(FLoadingAnimationStep);
-  
-  ProgressBarLoading.Position := (FLoadingAnimationStep * 5) mod 100;
-  
-  case (FLoadingAnimationStep div 2) mod 4 of
-    0: ShapeLoading.Brush.Color := clBlue;
-    1: ShapeLoading.Brush.Color := clAqua;
-    2: ShapeLoading.Brush.Color := clBlue;
-    3: ShapeLoading.Brush.Color := clSkyBlue;
-  end;
-end;
-
-procedure TFormMain.btnCancelRequestClick(Sender: TObject);
-begin
-  FCancelled := True;
-  LogMessage('Request cancellation requested...');
-end;
-
-procedure TFormMain.LogMessage(const Msg: string);
-begin
-  TThread.Synchronize(nil, 
-    procedure
-    begin
-      MemoResponse.Lines.Add('[' + FormatDateTime('hh:nn:ss', Now) + '] ' + Msg);
-    end
-  );
-end;
-
-procedure TFormMain.UpdateTokenStatus;
-var
-  AccessToken: string;
-  Expiry: TDateTime;
-begin
-  AccessToken := TTokenStorage.LoadAccessToken;
-  Expiry := TTokenStorage.LoadTokenExpiry;
-  
-  if AccessToken <> '' then
-  begin
-    if IsTokenExpired then
-      LabelTokenStatus.Caption := 'Token Status: EXPIRED'
-    else
-      LabelTokenStatus.Caption := 'Token Status: VALID (expires: ' + 
-        FormatDateTime('yyyy-mm-dd hh:nn:ss', Expiry) + ')';
-    
-    if IsTokenExpired then
-      LabelTokenStatus.Font.Color := clRed
-    else
-      LabelTokenStatus.Font.Color := clGreen;
-  end
-  else
-  begin
-    LabelTokenStatus.Caption := 'Token Status: NOT AUTHENTICATED';
-    LabelTokenStatus.Font.Color := clGray;
-  end;
+  FAccessToken := '';
+  FRefreshToken := '';
+  FTokenExpiry := 0;
+  TTokenStorage.ClearTokens;
+  MemoResponse.Lines.Add('Tokens cleared');
 end;
 
 function TFormMain.IsTokenExpired: Boolean;
-var
-  Expiry: TDateTime;
 begin
-  Expiry := TTokenStorage.LoadTokenExpiry;
-  Result := (Expiry = 0) or (Now >= Expiry);
+  Result := (FTokenExpiry > 0) and (Now >= FTokenExpiry);
 end;
 
-procedure TFormMain.SaveTokensFromResponse(const JSONResponse: TJSONObject);
-var
-  AccessToken, RefreshToken: string;
-  ExpiresIn: Integer;
-  ExpiryTime: TDateTime;
+procedure TFormMain.SetAuthorizationHeader;
 begin
-  AccessToken := JSONResponse.GetValue<string>('accessToken');
-  RefreshToken := JSONResponse.GetValue<string>('refreshToken');
-  ExpiresIn := JSONResponse.GetValue<Integer>('expiresin');
-  
-  ExpiryTime := IncSecond(Now, ExpiresIn - 30);
-  
-  TTokenStorage.SaveAccessToken(AccessToken);
-  TTokenStorage.SaveRefreshToken(RefreshToken);
-  TTokenStorage.SaveTokenExpiry(ExpiryTime);
-  
-  OAuth2Authenticator1.AccessToken := AccessToken;
-  
-  UpdateTokenStatus;
-end;
-
-function TFormMain.Login(const Email, Password: string): Boolean;
-var
-  JSONBody: TJSONObject;
-  JSONResponse: TJSONObject;
-  LocalRESTClient: TRESTClient;
-  LocalRESTRequest: TRESTRequest;
-  LocalRESTResponse: TRESTResponse;
-begin
-  Result := False;
-  
-  LocalRESTClient := TRESTClient.Create(nil);
-  LocalRESTResponse := TRESTResponse.Create(nil);
-  LocalRESTRequest := TRESTRequest.Create(nil);
-  try
-    LocalRESTClient.BaseURL := API_BASE_URL;
-    LocalRESTClient.ConnectTimeout := 30000;
-    LocalRESTClient.ReadTimeout := 30000;
-    
-    LocalRESTRequest.Client := LocalRESTClient;
-    LocalRESTRequest.Response := LocalRESTResponse;
-    LocalRESTRequest.Timeout := 30000;
-    
-    JSONBody := TJSONObject.Create;
-    try
-      JSONBody.AddPair('email', Email);
-      JSONBody.AddPair('password', Password);
-      
-      LocalRESTRequest.Method := TRESTRequestMethod.rmPOST;
-      LocalRESTRequest.Resource := ENDPOINT_LOGIN;
-      LocalRESTRequest.ClearBody;
-      LocalRESTRequest.AddBody(JSONBody.ToJSON, TRESTContentType.ctAPPLICATION_JSON);
-      
-      LogMessage('Sending login request...');
-      
-      if FCancelled then Exit;
-      LocalRESTRequest.Execute;
-      
-      if FCancelled then
-      begin
-        LogMessage('Login request cancelled');
-        Exit;
-      end;
-      
-      if LocalRESTResponse.StatusCode = 200 then
-      begin
-        JSONResponse := TJSONObject.ParseJSONValue(LocalRESTResponse.Content) as TJSONObject;
-        try
-          TThread.Synchronize(nil,
-            procedure
-            begin
-              SaveTokensFromResponse(JSONResponse);
-            end
-          );
-          Result := True;
-          LogMessage('Login successful!');
-          LogMessage('Response: ' + LocalRESTResponse.Content);
-        finally
-          JSONResponse.Free;
-        end;
-      end
-      else
-      begin
-        LogMessage('Login failed!');
-        LogMessage('Status: ' + LocalRESTResponse.StatusCode.ToString);
-        LogMessage('Response: ' + LocalRESTResponse.Content);
-      end;
-    finally
-      JSONBody.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      LogMessage('Exception during login: ' + E.Message);
-    end;
-  end;
-  
-  LocalRESTRequest.Free;
-  LocalRESTResponse.Free;
-  LocalRESTClient.Free;
-end;
-
-function TFormMain.RefreshAccessToken: Boolean;
-var
-  JSONBody: TJSONObject;
-  JSONResponse: TJSONObject;
-  RefreshToken: string;
-  LocalRESTClient: TRESTClient;
-  LocalRESTRequest: TRESTRequest;
-  LocalRESTResponse: TRESTResponse;
-begin
-  Result := False;
-  
-  RefreshToken := TTokenStorage.LoadRefreshToken;
-  if RefreshToken = '' then
-  begin
-    LogMessage('No refresh token available!');
-    Exit;
-  end;
-  
-  LocalRESTClient := TRESTClient.Create(nil);
-  LocalRESTResponse := TRESTResponse.Create(nil);
-  LocalRESTRequest := TRESTRequest.Create(nil);
-  try
-    LocalRESTClient.BaseURL := API_BASE_URL;
-    LocalRESTClient.ConnectTimeout := 30000;
-    LocalRESTClient.ReadTimeout := 30000;
-    
-    LocalRESTRequest.Client := LocalRESTClient;
-    LocalRESTRequest.Response := LocalRESTResponse;
-    LocalRESTRequest.Timeout := 30000;
-    
-    JSONBody := TJSONObject.Create;
-    try
-      JSONBody.AddPair('refreshToken', RefreshToken);
-      
-      LocalRESTRequest.Method := TRESTRequestMethod.rmPOST;
-      LocalRESTRequest.Resource := ENDPOINT_REFRESH_TOKEN;
-      LocalRESTRequest.ClearBody;
-      LocalRESTRequest.AddBody(JSONBody.ToJSON, TRESTContentType.ctAPPLICATION_JSON);
-      
-      LogMessage('Refreshing access token...');
-      
-      if FCancelled then Exit;
-      LocalRESTRequest.Execute;
-      
-      if FCancelled then
-      begin
-        LogMessage('Refresh token request cancelled');
-        Exit;
-      end;
-      
-      if LocalRESTResponse.StatusCode = 200 then
-      begin
-        JSONResponse := TJSONObject.ParseJSONValue(LocalRESTResponse.Content) as TJSONObject;
-        try
-          TThread.Synchronize(nil,
-            procedure
-            begin
-              SaveTokensFromResponse(JSONResponse);
-            end
-          );
-          Result := True;
-          LogMessage('Token refreshed successfully!');
-          LogMessage('Response: ' + LocalRESTResponse.Content);
-        finally
-          JSONResponse.Free;
-        end;
-      end
-      else
-      begin
-        LogMessage('Token refresh failed!');
-        LogMessage('Status: ' + LocalRESTResponse.StatusCode.ToString);
-        LogMessage('Response: ' + LocalRESTResponse.Content);
-      end;
-    finally
-      JSONBody.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      LogMessage('Exception during token refresh: ' + E.Message);
-    end;
-  end;
-  
-  LocalRESTRequest.Free;
-  LocalRESTResponse.Free;
-  LocalRESTClient.Free;
-end;
-
-function TFormMain.GetUsersList: string;
-var
-  LocalRESTClient: TRESTClient;
-  LocalRESTRequest: TRESTRequest;
-  LocalRESTResponse: TRESTResponse;
-  CurrentAccessToken: string;
-begin
-  Result := '';
-  
-  if IsTokenExpired then
-  begin
-    LogMessage('Token expired, refreshing...');
-    if not RefreshAccessToken then
-    begin
-      LogMessage('Failed to refresh token. Please login again.');
-      Exit;
-    end;
-  end;
-  
-  LocalRESTClient := TRESTClient.Create(nil);
-  LocalRESTResponse := TRESTResponse.Create(nil);
-  LocalRESTRequest := TRESTRequest.Create(nil);
-  try
-    LocalRESTClient.BaseURL := API_BASE_URL;
-    LocalRESTClient.ConnectTimeout := 30000;
-    LocalRESTClient.ReadTimeout := 30000;
-    
-    CurrentAccessToken := TTokenStorage.LoadAccessToken;
-    
-    LocalRESTRequest.Client := LocalRESTClient;
-    LocalRESTRequest.Response := LocalRESTResponse;
-    LocalRESTRequest.Timeout := 30000;
-    
-    LocalRESTRequest.Method := TRESTRequestMethod.rmGET;
-    LocalRESTRequest.Resource := ENDPOINT_USERS_LIST;
-    LocalRESTRequest.Params.Clear;
-    
-    LocalRESTRequest.Params.AddHeader('Authorization', 'Bearer ' + CurrentAccessToken);
-    
-    LogMessage('Fetching users list...');
-    
-    if FCancelled then Exit;
-    LocalRESTRequest.Execute;
-    
-    if FCancelled then
-    begin
-      LogMessage('Get users request cancelled');
-      Exit;
-    end;
-    
-    if LocalRESTResponse.StatusCode = 200 then
-    begin
-      Result := LocalRESTResponse.Content;
-      LogMessage('Users list retrieved successfully!');
-      LogMessage('Response: ' + Result);
-    end
-    else if LocalRESTResponse.StatusCode = 401 then
-    begin
-      LogMessage('Unauthorized, attempting to refresh token...');
-      if RefreshAccessToken then
-      begin
-        CurrentAccessToken := TTokenStorage.LoadAccessToken;
-        LocalRESTRequest.Params.Clear;
-        LocalRESTRequest.Params.AddHeader('Authorization', 'Bearer ' + CurrentAccessToken);
-        
-        if FCancelled then Exit;
-        LocalRESTRequest.Execute;
-        
-        if not FCancelled and (LocalRESTResponse.StatusCode = 200) then
-        begin
-          Result := LocalRESTResponse.Content;
-          LogMessage('Users list retrieved after token refresh!');
-          LogMessage('Response: ' + Result);
-        end;
-      end
-      else
-      begin
-        LogMessage('Failed to refresh token. Please login again.');
-      end;
-    end
-    else
-    begin
-      LogMessage('Failed to get users list!');
-      LogMessage('Status: ' + LocalRESTResponse.StatusCode.ToString);
-      LogMessage('Response: ' + LocalRESTResponse.Content);
-    end;
-  except
-    on E: Exception do
-    begin
-      LogMessage('Exception during get users: ' + E.Message);
-    end;
-  end;
-  
-  LocalRESTRequest.Free;
-  LocalRESTResponse.Free;
-  LocalRESTClient.Free;
-end;
-
-procedure TFormMain.LoginAsync(const Email, Password: string);
-begin
-  EnableControls(False);
-  ShowLoading('Authenticating...');
-  
-  FTask := TTask.Run(
-    procedure
-    begin
-      try
-        Login(Email, Password);
-      finally
-        TThread.Synchronize(nil,
-          procedure
-          begin
-            HideLoading;
-            EnableControls(True);
-          end
-        );
-      end;
-    end
-  );
-end;
-
-procedure TFormMain.RefreshAccessTokenAsync;
-begin
-  EnableControls(False);
-  ShowLoading('Refreshing token...');
-  
-  FTask := TTask.Run(
-    procedure
-    begin
-      try
-        RefreshAccessToken;
-      finally
-        TThread.Synchronize(nil,
-          procedure
-          begin
-            HideLoading;
-            EnableControls(True);
-          end
-        );
-      end;
-    end
-  );
-end;
-
-procedure TFormMain.GetUsersListAsync;
-begin
-  EnableControls(False);
-  ShowLoading('Loading users...');
-  
-  FTask := TTask.Run(
-    procedure
-    begin
-      try
-        GetUsersList;
-      finally
-        TThread.Synchronize(nil,
-          procedure
-          begin
-            HideLoading;
-            EnableControls(True);
-          end
-        );
-      end;
-    end
-  );
+  RESTRequest1.Params.Clear;
+  RESTRequest1.AddParameter('Authorization', 'Bearer ' + FAccessToken, TRESTRequestParameterKind.pkHTTPHEADER, [poDoNotEncode]);
 end;
 
 procedure TFormMain.btnLoginClick(Sender: TObject);
+var
+  JSONObj, DataObj: TJSONObject;
+  JSONValue: TJSONValue;
 begin
-  MemoResponse.Clear;
-  if (EditEmail.Text <> '') and (EditPassword.Text <> '') then
-    LoginAsync(EditEmail.Text, EditPassword.Text)
-  else
-    ShowMessage('Please enter email and password');
+  RESTRequest1.Method := TRESTRequestMethod.rmPOST;
+  RESTRequest1.Resource := '/auth/login';
+  RESTRequest1.Params.Clear;
+  
+  JSONObj := TJSONObject.Create;
+  try
+    JSONObj.AddPair('username', edtUsername.Text);
+    JSONObj.AddPair('password', edtPassword.Text);
+    RESTRequest1.AddBody(JSONObj.ToJSON, TRESTContentType.ctAPPLICATION_JSON);
+    
+    try
+      RESTRequest1.Execute;
+      
+      MemoResponse.Lines.Add('Login Response:');
+      MemoResponse.Lines.Add(RESTResponse1.Content);
+      
+      if RESTResponse1.StatusCode = 200 then
+      begin
+        JSONValue := TJSONObject.ParseJSONValue(RESTResponse1.Content);
+        try
+          if JSONValue is TJSONObject then
+          begin
+            DataObj := JSONValue as TJSONObject;
+            FAccessToken := DataObj.GetValue<string>('accessToken');
+            FRefreshToken := DataObj.GetValue<string>('refreshToken');
+            FTokenExpiry := IncSecond(Now, 3600); // Assuming 1 hour expiry
+            SaveTokens;
+            MemoResponse.Lines.Add('Tokens saved successfully');
+          end;
+        finally
+          JSONValue.Free;
+        end;
+      end;
+    except
+      on E: Exception do
+        MemoResponse.Lines.Add('Error: ' + E.Message);
+    end;
+  finally
+    JSONObj.Free;
+  end;
+end;
+
+procedure TFormMain.RefreshAccessToken;
+var
+  JSONObj, DataObj: TJSONObject;
+  JSONValue: TJSONValue;
+begin
+  if FRefreshToken = '' then
+  begin
+    MemoResponse.Lines.Add('No refresh token available');
+    Exit;
+  end;
+  
+  RESTRequest1.Method := TRESTRequestMethod.rmPOST;
+  RESTRequest1.Resource := '/auth/refresh';
+  RESTRequest1.Params.Clear;
+  
+  JSONObj := TJSONObject.Create;
+  try
+    JSONObj.AddPair('refreshToken', FRefreshToken);
+    RESTRequest1.AddBody(JSONObj.ToJSON, TRESTContentType.ctAPPLICATION_JSON);
+    
+    try
+      RESTRequest1.Execute;
+      
+      if RESTResponse1.StatusCode = 200 then
+      begin
+        JSONValue := TJSONObject.ParseJSONValue(RESTResponse1.Content);
+        try
+          if JSONValue is TJSONObject then
+          begin
+            DataObj := JSONValue as TJSONObject;
+            FAccessToken := DataObj.GetValue<string>('accessToken');
+            FTokenExpiry := IncSecond(Now, 3600);
+            SaveTokens;
+            MemoResponse.Lines.Add('Access token refreshed successfully');
+          end;
+        finally
+          JSONValue.Free;
+        end;
+      end
+      else
+      begin
+        MemoResponse.Lines.Add('Failed to refresh token');
+        MemoResponse.Lines.Add(RESTResponse1.Content);
+      end;
+    except
+      on E: Exception do
+        MemoResponse.Lines.Add('Error refreshing token: ' + E.Message);
+    end;
+  finally
+    JSONObj.Free;
+  end;
 end;
 
 procedure TFormMain.btnRefreshTokenClick(Sender: TObject);
 begin
-  MemoResponse.Clear;
-  RefreshAccessTokenAsync;
+  RefreshAccessToken;
 end;
 
-procedure TFormMain.btnGetUsersClick(Sender: TObject);
+procedure TFormMain.btnGetProtectedDataClick(Sender: TObject);
 begin
-  MemoResponse.Clear;
-  GetUsersListAsync;
+  if FAccessToken = '' then
+  begin
+    MemoResponse.Lines.Add('Please login first');
+    Exit;
+  end;
+  
+  if IsTokenExpired then
+  begin
+    MemoResponse.Lines.Add('Token expired, refreshing...');
+    RefreshAccessToken;
+  end;
+  
+  RESTRequest1.Method := TRESTRequestMethod.rmGET;
+  RESTRequest1.Resource := '/protected/data';
+  SetAuthorizationHeader;
+  
+  try
+    RESTRequest1.Execute;
+    
+    MemoResponse.Lines.Add('Protected Data Response:');
+    MemoResponse.Lines.Add(RESTResponse1.Content);
+    
+    if RESTResponse1.StatusCode = 401 then
+    begin
+      MemoResponse.Lines.Add('Token invalid, attempting refresh...');
+      RefreshAccessToken;
+    end;
+  except
+    on E: Exception do
+      MemoResponse.Lines.Add('Error: ' + E.Message);
+  end;
 end;
 
 procedure TFormMain.btnClearTokensClick(Sender: TObject);
 begin
-  TTokenStorage.ClearAllTokens;
-  OAuth2Authenticator1.AccessToken := '';
-  UpdateTokenStatus;
-  MemoResponse.Lines.Add('All tokens cleared!');
+  ClearTokens;
+end;
+
+procedure TFormMain.btnShowTokensClick(Sender: TObject);
+var
+  AccessToken, RefreshToken: string;
+  Expiry: TDateTime;
+  StoragePath: string;
+begin
+  AccessToken := TTokenStorage.LoadAccessToken;
+  RefreshToken := TTokenStorage.LoadRefreshToken;
+  Expiry := TTokenStorage.LoadTokenExpiry;
+  
+  MemoResponse.Lines.Add('==================== STORED TOKENS ====================');
+  MemoResponse.Lines.Add('Storage Path: ' + IncludeTrailingPathDelimiter(GetEnvironmentVariable('LOCALAPPDATA')) + 'MyRestApp\');
+  MemoResponse.Lines.Add('');
+  MemoResponse.Lines.Add('Access Token: ' + AccessToken);
+  MemoResponse.Lines.Add('');
+  MemoResponse.Lines.Add('Refresh Token: ' + RefreshToken);
+  MemoResponse.Lines.Add('');
+  if Expiry > 0 then
+    MemoResponse.Lines.Add('Expiry: ' + FormatDateTime('yyyy-mm-dd hh:nn:ss', Expiry))
+  else
+    MemoResponse.Lines.Add('Expiry: Not set');
+  MemoResponse.Lines.Add('');
+  MemoResponse.Lines.Add('Safe Mode (DPAPI): ' + BoolToStr(TTokenStorage.IsSafeMode, True));
+  MemoResponse.Lines.Add('=======================================================');
+end;
+
+procedure TFormMain.Timer1Timer(Sender: TObject);
+begin
+  if IsTokenExpired and (FRefreshToken <> '') then
+  begin
+    MemoResponse.Lines.Add('Auto-refreshing expired token...');
+    RefreshAccessToken;
+  end;
 end;
 
 end.
