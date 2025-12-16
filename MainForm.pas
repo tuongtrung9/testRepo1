@@ -101,8 +101,10 @@ begin
   
   UpdateTokenStatus;
   
-  StatusBar1.SimpleText := 'Safe Mode: ' + 
-    IfThen(TTokenStorage.IsSafeMode, 'ENABLED (DPAPI)', 'DISABLED (Memory Only)');
+  if TTokenStorage.IsSafeMode then
+    StatusBar1.SimpleText := 'Safe Mode: ENABLED (DPAPI)'
+  else
+    StatusBar1.SimpleText := 'Safe Mode: DISABLED (Memory Only)';
 end;
 
 procedure TFormMain.FormDestroy(Sender: TObject);
@@ -192,7 +194,10 @@ begin
       LabelTokenStatus.Caption := 'Token Status: VALID (expires: ' + 
         FormatDateTime('yyyy-mm-dd hh:nn:ss', Expiry) + ')';
     
-    LabelTokenStatus.Font.Color := IfThen(IsTokenExpired, clRed, clGreen);
+    if IsTokenExpired then
+      LabelTokenStatus.Font.Color := clRed
+    else
+      LabelTokenStatus.Font.Color := clGreen;
   end
   else
   begin
