@@ -1,0 +1,35 @@
+# Delphi
+__history/
+__recovery/
+*.identcache
+*.local
+*.~*
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.so
+*.apk
+*.drc
+*.map
+*.dres
+*.rsm
+*.tds
+*.dof
+*.cfg
+*.stat
+*.mps
+*.mpt
+
+# Token files
+*.dat
+
+# IDE
+*.cbproj.local
+*.groupproj.local
+*.dproj.local
+
+# OS
+.DS_Store
+Thumbs.db
